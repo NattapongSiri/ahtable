@@ -1,0 +1,13 @@
+[package]
+name = "ahtable"
+version = "0.1.0"
+authors = ["nattapongs <nattapong.sirilappanich2@ibm.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+twox-hash="^1.5"
+
+[dev-dependencies]
+fnv="^1.0"
