@@ -439,6 +439,7 @@ impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::h
 
 /// An iterator that return a reference to each entry in `ArrayHash`.
 /// It is useful for scanning entire `ArrayHash`.
+#[derive(Debug)]
 pub struct ArrayHashIterator<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
     buckets: &'a Box<[Vec<(K, V)>]>,
     current_iterator: core::slice::Iter<'a, (K, V)>,
@@ -485,6 +486,7 @@ impl<'a, K, V> core::iter::ExactSizeIterator for ArrayHashIterator<'a, K, V> whe
 /// 
 /// If you need to modify key, consider [remove](struct.ArrayHash.html#method.remove) old key first then
 /// [put](struct.ArrayHash.html#method.put) the new key back in.
+#[derive(Debug)]
 pub struct ArrayHashIterMut<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
     buckets: Box<[core::slice::IterMut<'a, (K, V)>]>,
     remain_slots: usize,
@@ -519,6 +521,7 @@ impl<'a, K, V> core::iter::ExactSizeIterator for ArrayHashIterMut<'a, K, V> wher
     }
 }
 
+#[derive(Debug)]
 pub struct ArrayHashIntoIter<K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
     buckets: std::vec::IntoIter<Vec<(K, V)>>,
     current_iterator: std::vec::IntoIter<(K, V)>,
@@ -599,6 +602,7 @@ impl<'a, H, K, V> IntoIterator for &'a mut ArrayHash<H, K, V> where H: core::has
 }
 
 /// An iterator that will drain it underlying [ArrayHash](struct.ArrayHash.html).
+#[derive(Debug)]
 pub struct DrainIter<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
     bucket_iter: core::slice::IterMut<'a, Vec<(K, V)>>,
     current_slot: Option<&'a mut Vec<(K, V)>>,
@@ -634,6 +638,7 @@ impl<'a, K, V> core::iter::ExactSizeIterator for DrainIter<'a, K, V> where K: co
 /// An iterator that remove and return element that satisfy predicate.
 /// It will also update the size of borrowed [ArrayHash](struct.ArrayHash.html) on each
 /// iteration.
+#[derive(Debug)]
 pub struct DrainWithIter<'a, F, K, V> where F: for<'r> Fn(&'r (K, V)) -> bool, K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
     bucket_iter: core::slice::IterMut<'a, Vec<(K, V)>>,
     cur_size: &'a mut usize,
