@@ -385,15 +385,15 @@ impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::h
             let mut j = 0;
 
             loop {
+                if j >= buckets[i].len() {
+                    break;
+                }
                 if pred(&buckets[i][j]) {
                     other.buckets.as_mut().unwrap()[i].push(buckets[i].swap_remove(j));
                     other.size += 1;
                     self.size -= 1;
                 } else {
                     j += 1;
-                }
-                if j >= buckets[i].len() {
-                    break;
                 }
             }
         }
