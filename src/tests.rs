@@ -672,6 +672,27 @@ fn test_vec_array_slot_memory_leak() {
         assert_eq!(count, 100_000);
     }
 }
+
+#[test]
+#[ignore]
+fn bench_compound_key() {
+    let start = std::time::Instant::now();
+    let mut ah = ArrayHashBuilder::default().buckets_size(4096).build();
+    for i in 0..100_000 {
+        let v: Vec<usize> = (i..(i + 100)).collect();
+        ah.put_compound(v.clone(), v);
+    }
+    let created = start.elapsed().as_millis();
+    println!("Created in {}s {}ms", created / 1000, created);
+    for i in 0..100_000 {
+        let v: Vec<usize> = (i..(i + 100)).collect();
+        if let Some(value) = ah.get_compound(&v) {
+            assert_eq!(*value, v);
+        }
+    }
+    let created = start.elapsed().as_millis();
+    println!("Got in {}s {}ms", created / 1000, created % 1000);
+}
 // Uncomment test case below and it should give a compile error by borrow checker on mutable and immutable borrow
 // #[test]
 // fn test_array_slot_borrow_checker() {
