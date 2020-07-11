@@ -239,16 +239,16 @@ fn test_split_with() {
 fn bench_compound_key() {
     let start = std::time::Instant::now();
     let mut ah = ArrayHashBuilder::default().buckets_size(4096).build();
-    for i in 0..10_000 {
+    for i in 0..100_000 {
         let v: Vec<usize> = (i..(i + 100)).collect();
         ah.put(v.clone(), v);
     }
     let created = start.elapsed().as_millis();
     println!("Created in {}s {}ms", created / 1000, created);
-    for i in 0..10_000 {
+    for i in 0..100_000 {
         let v: Vec<usize> = (i..(i + 100)).collect();
         if let Some(value) = ah.get(&v) {
-            assert_eq!(value, v);
+            assert_eq!(*value, v);
         }
     }
     let created = start.elapsed().as_millis();
