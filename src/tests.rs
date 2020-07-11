@@ -683,7 +683,7 @@ fn bench_compound_key() {
         ah.put_compound(v.clone(), v);
     }
     let created = start.elapsed().as_millis();
-    println!("Created in {}s {}ms", created / 1000, created);
+    println!("Created in {}s {}ms", created / 1000, created % 1000);
     for i in 0..100_000 {
         let v: Vec<usize> = (i..(i + 100)).collect();
         if let Some(value) = ah.get_compound(&v) {
