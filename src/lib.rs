@@ -7,7 +7,7 @@
 //! 
 //! This implementation try to use generic wherever possible.
 //! It end up with ArrayHash that take anything that is clonable as value and anything that
-//! implement `Hash`, `PartialEq`, and `Clone` as key.
+//! implement `Hash` and `PartialEq` as key.
 //! It let you choose whichever `Hasher` that you want. The only constraint is that
 //! `Hasher` must implement `Clone` trait.
 //! 
@@ -78,14 +78,23 @@ impl<H> ArrayHashBuilder<H> where H: core::hash::Hasher {
     }
 
     /// Change buckets size of [ArrayHasher](struct.ArrayHasher.html).
-    /// Buckets size will remain constant throughout entire lifecycle of it.
+    /// Buckets size scale once max_load_factor is reached.
+    /// The new size after it scaled is double of old size.
+    /// 
+    /// # Parameter
+    /// `size` - A number of buckets in this table. It must be greater than 0.
     pub fn buckets_size(mut self, size: usize) -> Self {
+        debug_assert!(size > 0);
         self.buckets_size = size;
         self
     }
 
     /// Change max number of entry before double the buckets size.
+    /// 
+    /// # Parameter
+    /// `factor` - A number of item before it double the bucket size.
     pub fn max_load_factor(mut self, factor: usize) -> Self {
+        debug_assert!(factor > 0);
         self.max_load_factor = factor;
         self
     }
@@ -95,15 +104,18 @@ impl<H> ArrayHashBuilder<H> where H: core::hash::Hasher {
     /// Keep in mind that each slot is a `vec`. It can grow pass this
     /// number. It'd be best to give a proper estimation to prevent unnecessary
     /// re-allocation.
+    /// 
+    /// # Parameter
+    /// `size` - A default size for each slot. 
     pub fn slot_size(mut self, size: usize) -> Self {
         self.slot_size = size;
         self
     }
 
     /// Consume this builder and construct a new [ArrayHash](struct.ArrayHash.html)
-    pub fn build<K, V>(self) -> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+    pub fn build<K, V>(self) -> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::hash::Hash + core::cmp::PartialEq {
         ArrayHash {
-            buckets: Some(vec![Vec::with_capacity(self.slot_size); self.buckets_size].into_boxed_slice()),
+            buckets: Some((0..self.buckets_size).map(|_| Vec::with_capacity(self.slot_size)).collect()),
             hasher: self.hasher,
             capacity: self.buckets_size,
             max_load_factor: self.max_load_factor,
@@ -121,12 +133,11 @@ impl<H> ArrayHashBuilder<H> where H: core::hash::Hasher {
 /// 
 /// In this implementation, user can supplied their own choice of hasher but it need to implement `Clone`.
 /// 
-/// The data can be anything that implement `Hash` and `Clone`. This is due to nature of
-/// `Vec` that the first allocation need to be cloneable. Otherwise, it cann't be pre-allocate.
+/// The data can be anything that implement `Hash`. 
 /// 
 /// The default `Hasher`, if not provided, will be `XxHash64`.
 #[derive(Clone, Debug)]
-pub struct ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::hash::Hash + PartialEq + Clone, V: Clone {
+pub struct ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::hash::Hash + PartialEq {
     buckets: Option<Box<[Vec<(K, V)>]>>,
     hasher: H,
     capacity: usize,
@@ -134,7 +145,7 @@ pub struct ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::hash
     size: usize
 }
 
-impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::hash::Hash + PartialEq + Clone, V: Clone {
+impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::hash::Hash + PartialEq {
     /// Add or replace entry into this `HashMap`.
     /// If entry is replaced, it will be return in `Option`.
     /// Otherwise, it return `None`
@@ -161,7 +172,7 @@ impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::h
             result = None
         }
 
-        self.buckets.as_mut().unwrap()[index].push((key.clone(), value));
+        self.buckets.as_mut().unwrap()[index].push((key, value));
 
         result
     }
@@ -190,23 +201,27 @@ impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::h
         }
     }
 
-    /// Get a value of given key from this `ArrayHash`
+    /// Get a value of given key from this `ArrayHash` relying on contractual
+    /// implementation of `PartialEq` and `Hash` where following contract applied:
+    /// - for any `A == B` then `B == A` then hash of `A` == hash of `B`
+    /// - for any `A == B` and `B == C` then `A == C` then hash of `A` == hash of `B` == hash of `C`
     /// 
     /// # Parameter
-    /// - `key` - A key to look for. It can be anything that can be deref into K
+    /// - `key` - A key to look for. 
     /// 
     /// # Return
     /// An `Option` contains a value or `None` if it is not found.
-    pub fn get(&self, key: &K) -> Option<&V> {
+    pub fn get<T>(&self, key: &T) -> Option<&V> where T: core::hash::Hash + PartialEq<K> {
         let index = self.make_key(key);
         let slot = &self.buckets.as_ref().unwrap()[index];
+        return slot.iter().find(|(k, _)| {key == k}).map(|(_, v)| v)
 
-        for (ref k, ref v) in slot.iter() {
-            if *k == *key {
-                return Some(v)
-            }
-        }
-        None
+        // for (ref k, ref v) in slot.iter() {
+        //     if *k == *key {
+        //         return Some(v)
+        //     }
+        // }
+        // None
     }
 
     /// Get a value using deref type.
@@ -222,35 +237,37 @@ impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::h
     /// 
     /// # Return
     /// `Some(&V)` if key exist in this table. Otherwise None.
-    pub fn smart_get<T, Q>(&self, key: Q) -> Option<&V> where Q: core::ops::Deref<Target=T>, K: core::ops::Deref<Target=T>, T: core::hash::Hash + core::cmp::PartialEq + ?Sized {
-        let mut local_hasher = self.hasher.clone();
-        key.hash(&mut local_hasher);
-        let index = local_hasher.finish() as usize % self.capacity;
+    pub fn smart_get<T, Q>(&self, key: Q) -> Option<&V> where Q: core::ops::Deref<Target=T>, K: core::ops::Deref<Target=T>, T: core::hash::Hash + core::cmp::PartialEq {
+        let index = self.make_key(&*key);
 
         let slot = &self.buckets.as_ref().unwrap()[index];
+        slot.iter().find(|(k, _)| **k == *key).map(|(_, v)| v)
 
-        for (ref k, ref v) in slot.iter() {
-            if **k == *key {
-                return Some(v)
-            }
-        }
-        None
+        // for (ref k, ref v) in slot.iter() {
+        //     if **k == *key {
+        //         return Some(v)
+        //     }
+        // }
+        // None
     }
 
-    /// Attempt to remove entry with given key from this `ArrayHash`.
+    /// Attempt to remove entry with given key from this `ArrayHash` relying on contractual
+    /// implementation of `PartialEq` and `Hash` where following contract applied:
+    /// - for any `A == B` then `B == A` then hash of `A` == hash of `B`
+    /// - for any `A == B` and `B == C` then `A == C` then hash of `A` == hash of `B` == hash of `C`
     /// 
     /// # Parameter
-    /// - `key` - A key of entry to be remove. It can be anything that can deref into `K`
+    /// - `key` - A key of entry to be remove.
     /// 
     /// # Return
     /// Option that contain tuple of (key, value) or `None` of key is not found
-    pub fn remove(&mut self, key: &K) -> Option<(K, V)> {
+    pub fn remove<T>(&mut self, key: &T) -> Option<(K, V)> where T: core::hash::Hash + PartialEq<K> {
         let slot_idx = self.make_key(key);
         let slot = self.buckets.as_mut().unwrap();
-        let entry_idx = slot[slot_idx].iter().position(|(k, _)| {*k == *key});
+        let entry_idx = slot[slot_idx].iter().position(|(k, _)| {key == k});
         if let Some(i) = entry_idx {
             self.size -= 1;
-            Some(slot[slot_idx].remove(i))
+            Some(slot[slot_idx].swap_remove(i))
         } else {
             None
         }
@@ -268,11 +285,11 @@ impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::h
     /// to each entry in this `ArrayHash`
     pub fn iter(&self) -> ArrayHashIterator<'_, K, V> {
         let slots = self.buckets.as_ref().unwrap();
+        let mut buckets = slots.iter();
+        let first_iter = buckets.next().unwrap().iter();
         ArrayHashIterator {
-            buckets: &slots,
-            current_iterator: slots[0].iter(),
-            remain_slots: slots.len() - 1, // it need to - 1 as one of it is considered in process
-            slot_cursor: 0,
+            buckets: buckets,
+            current_iterator: first_iter,
             size: self.size
         }
     }
@@ -401,8 +418,9 @@ impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::h
         other
     }
 
+    /// Since version 0.1.3, any type is acceptable as long as it implements `Hash`.
     #[inline(always)]
-    fn make_key<Q>(&self, key: Q) -> usize where Q: core::ops::Deref<Target=K> {
+    fn make_key<T>(&self, key: &T) -> usize where T: core::hash::Hash {
         let mut local_hasher = self.hasher.clone();
         key.hash(&mut local_hasher);
         local_hasher.finish() as usize % self.capacity
@@ -418,13 +436,13 @@ impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::h
             return false
         }
 
-        let old_buckets = self.buckets.take().unwrap().to_vec();
+        let old_buckets = self.buckets.take().unwrap().into_vec();
         let new_capacity = self.capacity * 2;
         self.capacity = new_capacity;
         self.max_load_factor *= 2;
         // Assume hash is evenly distribute entry in bucket, the new slot size shall be <= old slot size.
         // This is because the bucket size is doubled.
-        let mut buckets = vec!(Vec::with_capacity(old_buckets[0].len()); new_capacity);
+        let mut buckets: Vec<Vec<(K, V)>> = (0..new_capacity).map(|_| Vec::with_capacity(old_buckets[0].len())).collect();
         old_buckets.into_iter().for_each(|slot| {
             for (key, value) in slot {
                 let index = self.make_key(&key);
@@ -440,24 +458,21 @@ impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::h
 /// An iterator that return a reference to each entry in `ArrayHash`.
 /// It is useful for scanning entire `ArrayHash`.
 #[derive(Debug)]
-pub struct ArrayHashIterator<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
-    buckets: &'a Box<[Vec<(K, V)>]>,
+pub struct ArrayHashIterator<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {
+    buckets: core::slice::Iter<'a, Vec<(K, V)>>,
     current_iterator: core::slice::Iter<'a, (K, V)>,
-    slot_cursor: usize,
-    remain_slots: usize,
     size: usize
 }
 
-impl<'a, K, V> Iterator for ArrayHashIterator<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+impl<'a, K, V> Iterator for ArrayHashIterator<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {
     type Item=&'a (K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut result = self.current_iterator.next();
 
         while result.is_none() {
-            if self.slot_cursor < self.remain_slots {
-                self.slot_cursor += 1;
-                self.current_iterator = self.buckets[self.slot_cursor].iter();
+            if let Some(slot) = self.buckets.next() {
+                self.current_iterator = slot.iter();
                 result = self.current_iterator.next();
             } else {
                 break
@@ -468,9 +483,9 @@ impl<'a, K, V> Iterator for ArrayHashIterator<'a, K, V> where K: core::hash::Has
     }
 }
 
-impl<'a, K, V> core::iter::FusedIterator for ArrayHashIterator<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {}
+impl<'a, K, V> core::iter::FusedIterator for ArrayHashIterator<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {}
 
-impl<'a, K, V> core::iter::ExactSizeIterator for ArrayHashIterator<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+impl<'a, K, V> core::iter::ExactSizeIterator for ArrayHashIterator<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {
     fn len(&self) -> usize {
         self.size
     }
@@ -487,14 +502,14 @@ impl<'a, K, V> core::iter::ExactSizeIterator for ArrayHashIterator<'a, K, V> whe
 /// If you need to modify key, consider [remove](struct.ArrayHash.html#method.remove) old key first then
 /// [put](struct.ArrayHash.html#method.put) the new key back in.
 #[derive(Debug)]
-pub struct ArrayHashIterMut<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+pub struct ArrayHashIterMut<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {
     buckets: Box<[core::slice::IterMut<'a, (K, V)>]>,
     remain_slots: usize,
     slot_cursor: usize,
     size: usize
 }
 
-impl<'a, K, V> Iterator for ArrayHashIterMut<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+impl<'a, K, V> Iterator for ArrayHashIterMut<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {
     type Item=&'a mut (K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -513,22 +528,22 @@ impl<'a, K, V> Iterator for ArrayHashIterMut<'a, K, V> where K: core::hash::Hash
     }
 }
 
-impl<'a, K, V> core::iter::FusedIterator for ArrayHashIterMut<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {}
+impl<'a, K, V> core::iter::FusedIterator for ArrayHashIterMut<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {}
 
-impl<'a, K, V> core::iter::ExactSizeIterator for ArrayHashIterMut<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+impl<'a, K, V> core::iter::ExactSizeIterator for ArrayHashIterMut<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {
     fn len(&self) -> usize {
         self.size
     }
 }
 
 #[derive(Debug)]
-pub struct ArrayHashIntoIter<K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+pub struct ArrayHashIntoIter<K, V> where K: core::hash::Hash + core::cmp::PartialEq {
     buckets: std::vec::IntoIter<Vec<(K, V)>>,
     current_iterator: std::vec::IntoIter<(K, V)>,
     size: usize
 }
 
-impl<K, V> Iterator for ArrayHashIntoIter<K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+impl<K, V> Iterator for ArrayHashIntoIter<K, V> where K: core::hash::Hash + core::cmp::PartialEq {
     type Item=(K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -550,21 +565,21 @@ impl<K, V> Iterator for ArrayHashIntoIter<K, V> where K: core::hash::Hash + core
     }
 }
 
-impl<K, V> core::iter::FusedIterator for ArrayHashIntoIter<K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {}
+impl<K, V> core::iter::FusedIterator for ArrayHashIntoIter<K, V> where K: core::hash::Hash + core::cmp::PartialEq {}
 
-impl<K, V> core::iter::ExactSizeIterator for ArrayHashIntoIter<K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+impl<K, V> core::iter::ExactSizeIterator for ArrayHashIntoIter<K, V> where K: core::hash::Hash + core::cmp::PartialEq {
     fn len(&self) -> usize {
         self.size
     }
 }
 
-impl<H, K, V> IntoIterator for ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+impl<H, K, V> IntoIterator for ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::hash::Hash + core::cmp::PartialEq {
     type Item=(K, V);
     type IntoIter=ArrayHashIntoIter<K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
         if self.size >= 1 {
-            let mut buckets = self.buckets.unwrap().to_vec().into_iter();
+            let mut buckets = self.buckets.unwrap().into_vec().into_iter();
             let current_iterator = buckets.next().unwrap().into_iter();
             ArrayHashIntoIter {
                 buckets,
@@ -583,7 +598,7 @@ impl<H, K, V> IntoIterator for ArrayHash<H, K, V> where H: core::hash::Hasher + 
     }
 }
 
-impl<'a, H, K, V> IntoIterator for &'a ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+impl<'a, H, K, V> IntoIterator for &'a ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::hash::Hash + core::cmp::PartialEq {
     type Item=&'a(K, V);
     type IntoIter=ArrayHashIterator<'a, K, V>;
 
@@ -592,7 +607,7 @@ impl<'a, H, K, V> IntoIterator for &'a ArrayHash<H, K, V> where H: core::hash::H
     }
 }
 
-impl<'a, H, K, V> IntoIterator for &'a mut ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+impl<'a, H, K, V> IntoIterator for &'a mut ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::hash::Hash + core::cmp::PartialEq {
     type Item=&'a mut (K, V);
     type IntoIter=ArrayHashIterMut<'a, K, V>;
 
@@ -603,13 +618,13 @@ impl<'a, H, K, V> IntoIterator for &'a mut ArrayHash<H, K, V> where H: core::has
 
 /// An iterator that will drain it underlying [ArrayHash](struct.ArrayHash.html).
 #[derive(Debug)]
-pub struct DrainIter<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+pub struct DrainIter<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {
     bucket_iter: core::slice::IterMut<'a, Vec<(K, V)>>,
     current_slot: Option<&'a mut Vec<(K, V)>>,
     size: usize,
 }
 
-impl<'a, K, V> Iterator for DrainIter<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+impl<'a, K, V> Iterator for DrainIter<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {
     type Item=(K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -628,8 +643,8 @@ impl<'a, K, V> Iterator for DrainIter<'a, K, V> where K: core::hash::Hash + core
     }
 }
 
-impl<'a, K, V> core::iter::FusedIterator for DrainIter<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {}
-impl<'a, K, V> core::iter::ExactSizeIterator for DrainIter<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+impl<'a, K, V> core::iter::FusedIterator for DrainIter<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {}
+impl<'a, K, V> core::iter::ExactSizeIterator for DrainIter<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {
     fn len(&self) -> usize {
         self.size
     }
@@ -639,7 +654,7 @@ impl<'a, K, V> core::iter::ExactSizeIterator for DrainIter<'a, K, V> where K: co
 /// It will also update the size of borrowed [ArrayHash](struct.ArrayHash.html) on each
 /// iteration.
 #[derive(Debug)]
-pub struct DrainWithIter<'a, F, K, V> where F: for<'r> Fn(&'r (K, V)) -> bool, K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+pub struct DrainWithIter<'a, F, K, V> where F: for<'r> Fn(&'r (K, V)) -> bool, K: core::hash::Hash + core::cmp::PartialEq {
     bucket_iter: core::slice::IterMut<'a, Vec<(K, V)>>,
     cur_size: &'a mut usize,
     current_slot: Option<&'a mut Vec<(K, V)>>,
@@ -647,7 +662,7 @@ pub struct DrainWithIter<'a, F, K, V> where F: for<'r> Fn(&'r (K, V)) -> bool, K
     size: usize
 }
 
-impl<'a, F, K, V> Iterator for DrainWithIter<'a, F, K, V> where F: for<'r> Fn(&'r (K, V)) -> bool, K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+impl<'a, F, K, V> Iterator for DrainWithIter<'a, F, K, V> where F: for<'r> Fn(&'r (K, V)) -> bool, K: core::hash::Hash + core::cmp::PartialEq {
     type Item=(K, V);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -681,8 +696,8 @@ impl<'a, F, K, V> Iterator for DrainWithIter<'a, F, K, V> where F: for<'r> Fn(&'
     }
 }
 
-impl<'a, F, K, V> core::iter::FusedIterator for DrainWithIter<'a, F, K, V> where F: for<'r> Fn(&'r (K, V)) -> bool, K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {}
-impl<'a, F, K, V> core::iter::ExactSizeIterator for DrainWithIter<'a, F, K, V> where F: for<'r> Fn(&'r (K, V)) -> bool, K: core::hash::Hash + core::cmp::PartialEq + Clone, V: Clone {
+impl<'a, F, K, V> core::iter::FusedIterator for DrainWithIter<'a, F, K, V> where F: for<'r> Fn(&'r (K, V)) -> bool, K: core::hash::Hash + core::cmp::PartialEq {}
+impl<'a, F, K, V> core::iter::ExactSizeIterator for DrainWithIter<'a, F, K, V> where F: for<'r> Fn(&'r (K, V)) -> bool, K: core::hash::Hash + core::cmp::PartialEq {
     fn len(&self) -> usize {
         self.size
     }

@@ -88,6 +88,42 @@ fn put_smart_get_xx() {
 }
 
 #[test]
+fn put_contractual_get_xx() {
+    let mut ah = ArrayHashBuilder::default().max_load_factor(10_000).build();
+
+    #[derive(Hash, PartialEq)]
+    struct A(usize);
+
+    #[derive(Hash)]
+    struct B(usize);
+
+    impl PartialEq<A> for B {
+        fn eq(&self, other: &A) -> bool {
+            self.0 == other.0
+        }
+    }
+    
+    const MAX :usize = 1_000_000;
+    for i in 0..MAX { // put 1 million entry with one usize for each key and value
+        ah.put(A(i), i); // Put value using smart pointer Box
+    }
+
+    assert!(ah.get(&A(MAX + 1)).is_none());
+
+    let begin = std::time::Instant::now();
+
+    for j in 0..MAX {
+        if let Some(v) = ah.get(&B(j)) { // Get value using borrow type
+            assert_eq!(*v, j);
+        } else {
+            panic!("Cannot retrieve value back using existing key")
+        }
+    }
+
+    dbg!(begin.elapsed().as_millis());
+}
+
+#[test]
 fn make_custom_hasher() {
     let seed = 0u64;
     let hasher = CustomHasher {
