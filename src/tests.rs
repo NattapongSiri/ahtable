@@ -89,7 +89,7 @@ fn put_smart_get_xx() {
 
 #[test]
 fn put_contractual_get_xx() {
-    let mut ah = ArrayHashBuilder::default().max_load_factor(10_000).build();
+    let mut ah = ArrayHashBuilder::default().build();
 
     #[derive(Hash, PartialEq)]
     struct A(usize);
@@ -98,8 +98,8 @@ fn put_contractual_get_xx() {
     struct B(usize);
 
     impl PartialEq<A> for B {
-        fn eq(&self, other: &A) -> bool {
-            self.0 == other.0
+        fn eq(&self, rhs: &A) -> bool {
+            self.0 == rhs.0
         }
     }
     
@@ -109,7 +109,6 @@ fn put_contractual_get_xx() {
     }
 
     assert!(ah.get(&A(MAX + 1)).is_none());
-
     let begin = std::time::Instant::now();
 
     for j in 0..MAX {
@@ -121,6 +120,90 @@ fn put_contractual_get_xx() {
     }
 
     dbg!(begin.elapsed().as_millis());
+}
+
+#[test]
+fn put_coalesced_get_xx() {
+    let mut ah = ArrayHashBuilder::default().max_load_factor(10_000).build();
+    
+    const MAX :usize = 1_000_000;
+    for i in 0..MAX { // put 1 million entry with one usize for each key and value
+        ah.put(vec![i], i); // Put value using smart pointer Box
+    }
+
+    assert!(ah.coerce_get::<[usize]>(&[MAX + 1]).is_none());
+    let begin = std::time::Instant::now();
+
+    for j in 0..MAX {
+        if let Some(v) = ah.coerce_get::<[usize]>(&[j]) { // Get value using borrow type
+            assert_eq!(*v, j);
+        } else {
+            panic!("Cannot retrieve value back using existing key")
+        }
+    }
+
+    dbg!(begin.elapsed().as_millis());
+}
+
+#[test]
+fn contains_all() {
+    let mut ah = ArrayHashBuilder::default().max_load_factor(10_000).build();
+    let mut another = ah.clone();
+    let mut partly_eq = ah.clone();
+    
+    const MAX :usize = 1_000_000;
+    for i in 0..MAX { // put 1 million entry with one usize for each key and value
+        ah.put(vec![i], i); // Put value using smart pointer Box
+    }
+
+    for i in 0..(MAX / 2) {
+        another.put(vec![i], i);
+        partly_eq.put(vec![i], 0);
+    }
+
+    let begin = std::time::Instant::now();
+    assert!(ah.contains_iter(&another));
+    assert!(!ah.contains_iter(&partly_eq));
+    dbg!(begin.elapsed().as_millis());
+}
+
+#[test]
+fn partial_eq() {
+    let mut ah = ArrayHashBuilder::default().max_load_factor(8).buckets_size(8).build();
+    let mut ah_2 = ArrayHashBuilder::default().max_load_factor(8).buckets_size(8).build();
+    
+    const MAX :usize = 16;
+    for i in 0..MAX { // put 1 million entry with one usize for each key and value
+        ah.put(vec![i], i); 
+        ah_2.put(vec![i], i); // Put similar key/value to see if it's eq
+    }
+
+    assert_ne!(ah, ah_2);
+
+    let ah_3 = ah.clone();
+    assert_eq!(ah, ah_3);
+    let mut ah_4 = ah.to_builder().build();
+    let mut ah_5 = ah.to_builder().build();
+
+    for i in 0..MAX {
+        ah_4.put(vec![i], i); // Put similar key/value to see if it's eq
+        ah_5.put(vec![i], 0); // Put similar key but different value to see if it's eq
+    }
+
+    assert_eq!(ah, ah_4);
+    assert_ne!(ah, ah_5);
+}
+#[test]
+fn hasher_eq() {
+    let ah = ArrayHashBuilder::default().max_load_factor(8).buckets_size(8).build::<u8, u8>();
+    let ah_2 = ArrayHashBuilder::default().max_load_factor(8).buckets_size(8).build::<u8, u8>();
+    assert!(!ah.is_hasher_eq(&ah_2));
+    let ah_3 = ah.clone();
+    assert!(ah.is_hasher_eq(&ah_3));
+    let ah_4 = ah.to_builder().build::<u8, u8>();
+    let ah_5 = ah.to_builder().build::<u8, u8>();
+    assert!(ah.is_hasher_eq(&ah_4));
+    assert!(ah_5.is_hasher_eq(&ah_4));
 }
 
 #[test]

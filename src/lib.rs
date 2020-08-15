@@ -17,7 +17,8 @@
 //! The default `Hasher` is `XxHasher64`.
 
 use twox_hash::{RandomXxHashBuilder64, XxHash64};
-use core::hash::BuildHasher;
+use core::hash::{BuildHasher, Hash, Hasher};
+use core::borrow::Borrow;
 
 const MAX_LOAD_FACTOR: usize = 100_000; // Number of element before resize the table
 
@@ -26,6 +27,7 @@ const DEFAULT_BUCKETS_SIZE: usize = 4096 / std::mem::size_of::<usize>();
 const DEFAULT_SLOT_SIZE: usize = 8;
 
 /// A builder that use for build an [ArrayHash](struct.ArrayHash.html).
+#[derive(Clone, Hash, PartialEq)]
 pub struct ArrayHashBuilder<H> {
     hasher: H,
     buckets_size: usize,
@@ -51,12 +53,30 @@ impl Default for ArrayHashBuilder<XxHash64> {
     }
 }
 
+/// Make [ArrayHashBuilder](struct.ArrayHashBuilder.html) with spec from existing [ArrayHash](struct.ArrayHash.html).
+/// 
+/// This is useful for creating an object of array hash that may be later compare to baseline array for equality.
+impl<'a, H, K, V> From<&'a ArrayHash<H, K, V>> for ArrayHashBuilder<H> where H: Clone + Hasher, K: Hash + PartialEq {
+    fn from(ah: &'a ArrayHash<H, K, V>) -> ArrayHashBuilder<H> {
+        let buckets = ah.buckets.as_ref().unwrap();
+        
+        debug_assert!(buckets.len() > 0);
+
+        ArrayHashBuilder {
+            buckets_size: buckets.len(),
+            hasher: ah.hasher.clone(),
+            max_load_factor: ah.max_load_factor,
+            slot_size: buckets[0].len()
+        }
+    }
+}
+
 impl<H> ArrayHashBuilder<H> where H: core::hash::Hasher {
     /// Create new ArrayHashBuilder by using given hasher.
     /// As currently is, the default allocated number of slot per bucket is (4096 / size of usize) slots.
     /// 
     /// Since all slots are Vec, it will be re-allocate if it grow larger than this default.
-    /// However, number of slots per bucket will be constant. It will never grow pass this number.
+    #[inline]
     pub fn with_hasher(hasher: H) -> ArrayHashBuilder<H> {
         ArrayHashBuilder {
             hasher: hasher,
@@ -68,6 +88,7 @@ impl<H> ArrayHashBuilder<H> where H: core::hash::Hasher {
 
     /// Switch hasher to other hasher. This will consume current builder and
     /// return a new one with new builder
+    #[inline]
     pub fn hasher<H2>(self, hasher: H2) -> ArrayHashBuilder<H2> {
         ArrayHashBuilder {
             hasher,
@@ -136,7 +157,7 @@ impl<H> ArrayHashBuilder<H> where H: core::hash::Hasher {
 /// The data can be anything that implement `Hash`. 
 /// 
 /// The default `Hasher`, if not provided, will be `XxHash64`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Hash)]
 pub struct ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::hash::Hash + PartialEq {
     buckets: Option<Box<[Vec<(K, V)>]>>,
     hasher: H,
@@ -145,7 +166,51 @@ pub struct ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::hash
     size: usize
 }
 
+/// Generalize implementation that let two array hash of different type of key and value to be
+/// comparable. 
+/// It requires that both side must use the same hasher with exactly same seed.
+/// It rely on a contract that if any `K1 == K2` then it mean those two hash is also
+/// equals.
+impl<H, K1, V1, K2, V2> PartialEq<ArrayHash<H, K1, V1>> for ArrayHash<H, K2, V2>
+where H: Clone + Hasher + PartialEq,
+      K1: Hash + PartialEq + PartialEq<K2>,
+      V1: PartialEq<V2>,
+      K2: Hash + PartialEq
+{
+    fn eq(&self, rhs: &ArrayHash<H, K1, V1>) -> bool {
+        self.is_hasher_eq(rhs) && 
+        self.capacity == rhs.capacity &&
+        self.size == rhs.size &&
+        rhs.buckets.as_deref().unwrap().iter().zip(self.buckets.as_deref().unwrap().iter()).all(|(rhs, lhs)| {
+            rhs.iter().zip(lhs.iter()).all(|((k1, v1), (k2, v2))| {k1 == k2 && v1 == v2})
+        })
+    }
+}
+
 impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::hash::Hash + PartialEq {
+
+    /// Make a builder with default specification equals to current specification of this
+    /// array. 
+    /// 
+    /// Note: The current specification of array may be different from the spec used to create
+    /// the array. For example, if original `max_load_factor` is `2` but 3 elements were put
+    /// into array, the `max_load_factor` will be `4` and the `bucket_size` will be double of 
+    /// the original `bucket_size`.
+    #[inline]
+    pub fn to_builder(&self) -> ArrayHashBuilder<H> {
+        ArrayHashBuilder::from(self)
+    }
+
+    /// Check if two array use the same hasher with exactly same seed.
+    /// This mean that value `A == B` on these two array will have exactly the same hash value.
+    #[inline]
+    pub fn is_hasher_eq<K2, V2>(&self, rhs: &ArrayHash<H, K2, V2>) -> bool
+    where H: PartialEq,
+          K2: Hash + PartialEq
+    {
+        self.hasher == rhs.hasher
+    }
+
     /// Add or replace entry into this `HashMap`.
     /// If entry is replaced, it will be return in `Option`.
     /// Otherwise, it return `None`
@@ -212,7 +277,7 @@ impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::h
     /// # Return
     /// An `Option` contains a value or `None` if it is not found.
     pub fn get<T>(&self, key: &T) -> Option<&V> where T: core::hash::Hash + PartialEq<K> {
-        let index = self.make_key(key);
+        let index = self.make_key(&key);
         let slot = &self.buckets.as_ref().unwrap()[index];
         return slot.iter().find(|(k, _)| {key == k}).map(|(_, v)| v)
 
@@ -251,6 +316,36 @@ impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::h
         // None
     }
 
+    /// Get a value of given key from this `ArrayHash` relying on contractual
+    /// implementation of `PartialEq` and `Hash` where following contract applied:
+    /// - `B` can be borrowed as type `A`
+    /// - for any `A == B` then `B == A` then hash of `A` == hash of `B`
+    /// - for any `A == B` and `B == C` then `A == C` then hash of `A` == hash of `B` == hash of `C`
+    /// - for any `&A == &B` then `A == B`
+    /// 
+    /// It is useful for case where the stored key and query key is different type but the stored key
+    /// can be borrow into the same type as query. For example, stored `Vec<T>` but query with `&[T]`.
+    /// It isn't possible to use [get](struct.ArrayHash.html#method.get) method as `[T]` 
+    /// isn't implement `PartialEq<Vec<T>>`.
+    /// 
+    /// # Parameter
+    /// - `key` - A key to look for. 
+    /// 
+    /// # Return
+    /// An `Option` contains a value or `None` if it is not found.
+    pub fn coerce_get<T>(&self, key: &T) -> Option<&V> where T: core::hash::Hash + PartialEq + ?Sized, K: Borrow<T> {
+        let index = self.make_key(key);
+        let slot = &self.buckets.as_ref().unwrap()[index];
+        return slot.iter().find(|(k, _)| {key == k.borrow()}).map(|(_, v)| v)
+
+        // for (ref k, ref v) in slot.iter() {
+        //     if *k == *key {
+        //         return Some(v)
+        //     }
+        // }
+        // None
+    }
+
     /// Attempt to remove entry with given key from this `ArrayHash` relying on contractual
     /// implementation of `PartialEq` and `Hash` where following contract applied:
     /// - for any `A == B` then `B == A` then hash of `A` == hash of `B`
@@ -273,9 +368,85 @@ impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::h
         }
     }
 
+    /// Attempt to remove entry with given key from this `ArrayHash`.
+    /// 
+    /// This is usable only if the key is a type of smart pointer that can be deref into another type
+    /// which implement `Hash` and `PartialEq`.
+    /// 
+    /// For example, if K is `Box<[u8]>`, you can use `&[u8]` to remove it.
+    /// 
+    /// # Parameter
+    /// - `key` - A key of entry to be remove.
+    /// 
+    /// # Return
+    /// Option that contain tuple of (key, value) or `None` of key is not found
+    pub fn smart_remove<Q, T>(&mut self, key: Q) -> Option<(K, V)>  where Q: core::ops::Deref<Target=T>, K: core::ops::Deref<Target=T>, T: core::hash::Hash + core::cmp::PartialEq {
+        let slot_idx = self.make_key(&*key);
+        let slot = self.buckets.as_mut().unwrap();
+        let entry_idx = slot[slot_idx].iter().position(|(k, _)| {*key == **k});
+        if let Some(i) = entry_idx {
+            self.size -= 1;
+            Some(slot[slot_idx].swap_remove(i))
+        } else {
+            None
+        }
+    }
+
+    /// Attempt to remove entry with given key from this `ArrayHash` relying on contractual
+    /// implementation of `PartialEq` and `Hash` where following contract applied:
+    /// - `B` can be borrowed as type `A`
+    /// - for any `A == B` then `B == A` then hash of `A` == hash of `B`
+    /// - for any `A == B` and `B == C` then `A == C` then hash of `A` == hash of `B` == hash of `C`
+    /// - for any `&A == &B` then `A == B`
+    /// 
+    /// It is useful for case where the stored key and query key is different type but the stored key
+    /// can be borrow into the same type as query. For example, stored `Vec<T>` but query with `&[T]`.
+    /// It isn't possible to use [get](struct.ArrayHash.html#method.get) method as `[T]` 
+    /// isn't implement `PartialEq<Vec<T>>`.
+    /// 
+    /// # Parameter
+    /// - `key` - A key of entry to be remove.
+    /// 
+    /// # Return
+    /// Option that contain tuple of (key, value) or `None` of key is not found
+    pub fn coerce_remove<T>(&mut self, key: &T) -> Option<(K, V)> where T: core::hash::Hash + PartialEq + ?Sized, K: Borrow<T> {
+        let slot_idx = self.make_key(key);
+        let slot = self.buckets.as_mut().unwrap();
+        let entry_idx = slot[slot_idx].iter().position(|(k, _)| {key == k.borrow()});
+        if let Some(i) = entry_idx {
+            self.size -= 1;
+            Some(slot[slot_idx].swap_remove(i))
+        } else {
+            None
+        }
+    }
+
     /// Current number of entry in this `ArrayHash`
+    #[inline]
     pub fn len(&self) -> usize {
         self.size
+    }
+
+    /// Check if this array hash contains every entry found in given other iterator that yield
+    /// `&(K, V)` and `V` implements `PartialEq`.
+    /// 
+    /// # Parameter
+    /// - `other` - A type that implement `IntoIterator<Item=&(K, V)>`
+    /// 
+    /// # Return
+    /// true if this array hash contains every entry that other iterator yield. Otherwise, false.
+    pub fn contains_iter<'a, I>(&self, other: I) -> bool where I: IntoIterator<Item=&'a (K, V)>, K: 'a, V: 'a + PartialEq {
+        for (key, value) in other.into_iter() {
+            if let Some(v) = self.get(key) {
+                if v != value {
+                    return false
+                }
+            } else {
+                return false
+            }
+        }
+
+        true
     }
 
     /// Get an iterator over this `ArrayHash`. 
@@ -393,10 +564,7 @@ impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::h
     /// # Return
     /// An [ArrayHash](struct.ArrayHash.html) that contains all entry that `pred` evaluate to true.
     pub fn split_by<F>(&mut self, pred: F) -> ArrayHash<H, K, V> where F: Fn(&(K, V)) -> bool {
-        let mut other = ArrayHashBuilder::with_hasher(self.hasher.clone())
-                                      .buckets_size(self.buckets.as_ref().unwrap().len())
-                                      .max_load_factor(self.max_load_factor)
-                                      .build();
+        let mut other = self.to_builder().build();
         let buckets = self.buckets.as_mut().unwrap();
         for i in 0..buckets.len() {
             let mut j = 0;
@@ -420,7 +588,7 @@ impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::h
 
     /// Since version 0.1.3, any type is acceptable as long as it implements `Hash`.
     #[inline(always)]
-    fn make_key<T>(&self, key: &T) -> usize where T: core::hash::Hash {
+    fn make_key<T>(&self, key: &T) -> usize where T: core::hash::Hash + ?Sized {
         let mut local_hasher = self.hasher.clone();
         key.hash(&mut local_hasher);
         local_hasher.finish() as usize % self.capacity
@@ -486,6 +654,7 @@ impl<'a, K, V> Iterator for ArrayHashIterator<'a, K, V> where K: core::hash::Has
 impl<'a, K, V> core::iter::FusedIterator for ArrayHashIterator<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {}
 
 impl<'a, K, V> core::iter::ExactSizeIterator for ArrayHashIterator<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {
+    #[inline]
     fn len(&self) -> usize {
         self.size
     }
@@ -531,6 +700,7 @@ impl<'a, K, V> Iterator for ArrayHashIterMut<'a, K, V> where K: core::hash::Hash
 impl<'a, K, V> core::iter::FusedIterator for ArrayHashIterMut<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {}
 
 impl<'a, K, V> core::iter::ExactSizeIterator for ArrayHashIterMut<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {
+    #[inline]
     fn len(&self) -> usize {
         self.size
     }
@@ -568,6 +738,7 @@ impl<K, V> Iterator for ArrayHashIntoIter<K, V> where K: core::hash::Hash + core
 impl<K, V> core::iter::FusedIterator for ArrayHashIntoIter<K, V> where K: core::hash::Hash + core::cmp::PartialEq {}
 
 impl<K, V> core::iter::ExactSizeIterator for ArrayHashIntoIter<K, V> where K: core::hash::Hash + core::cmp::PartialEq {
+    #[inline]
     fn len(&self) -> usize {
         self.size
     }
@@ -602,6 +773,7 @@ impl<'a, H, K, V> IntoIterator for &'a ArrayHash<H, K, V> where H: core::hash::H
     type Item=&'a(K, V);
     type IntoIter=ArrayHashIterator<'a, K, V>;
 
+    #[inline]
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
     }
@@ -611,6 +783,7 @@ impl<'a, H, K, V> IntoIterator for &'a mut ArrayHash<H, K, V> where H: core::has
     type Item=&'a mut (K, V);
     type IntoIter=ArrayHashIterMut<'a, K, V>;
 
+    #[inline]
     fn into_iter(self) -> Self::IntoIter {
         self.iter_mut()
     }
@@ -645,6 +818,7 @@ impl<'a, K, V> Iterator for DrainIter<'a, K, V> where K: core::hash::Hash + core
 
 impl<'a, K, V> core::iter::FusedIterator for DrainIter<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {}
 impl<'a, K, V> core::iter::ExactSizeIterator for DrainIter<'a, K, V> where K: core::hash::Hash + core::cmp::PartialEq {
+    #[inline]
     fn len(&self) -> usize {
         self.size
     }
@@ -698,6 +872,7 @@ impl<'a, F, K, V> Iterator for DrainWithIter<'a, F, K, V> where F: for<'r> Fn(&'
 
 impl<'a, F, K, V> core::iter::FusedIterator for DrainWithIter<'a, F, K, V> where F: for<'r> Fn(&'r (K, V)) -> bool, K: core::hash::Hash + core::cmp::PartialEq {}
 impl<'a, F, K, V> core::iter::ExactSizeIterator for DrainWithIter<'a, F, K, V> where F: for<'r> Fn(&'r (K, V)) -> bool, K: core::hash::Hash + core::cmp::PartialEq {
+    #[inline]
     fn len(&self) -> usize {
         self.size
     }
