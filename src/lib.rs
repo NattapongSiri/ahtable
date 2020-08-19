@@ -157,7 +157,7 @@ impl<H> ArrayHashBuilder<H> where H: core::hash::Hasher {
 /// The data can be anything that implement `Hash`. 
 /// 
 /// The default `Hasher`, if not provided, will be `XxHash64`.
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Debug)]
 pub struct ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::hash::Hash + PartialEq {
     buckets: Option<Box<[Vec<(K, V)>]>>,
     hasher: H,
@@ -182,8 +182,29 @@ where H: Clone + Hasher + PartialEq,
         self.capacity == rhs.capacity &&
         self.size == rhs.size &&
         rhs.buckets.as_deref().unwrap().iter().zip(self.buckets.as_deref().unwrap().iter()).all(|(rhs, lhs)| {
+            rhs.len() == lhs.len() && // Guard case where one side is prefix array of another
             rhs.iter().zip(lhs.iter()).all(|((k1, v1), (k2, v2))| {k1 == k2 && v1 == v2})
         })
+    }
+}
+
+/// Implement hash by using only `K` and `V` pair to calculate hash.
+/// It will still conform to following contract:
+/// For any `AH1 ==  AH2`, `hash(AH1) == hash(AH2)`.
+/// 
+/// This is because the `PartialEq` implementation check if both side have
+/// the same size, same hasher, same number of items, and exactly the same
+/// key and value pair returned by each yield of both AH1's and AH2's iterator. 
+/// However, hasher contract need no symmetric property.
+/// It mean that `hash(AH1) == hash(AH2) ` doesn't imply that `AH1 == AH2`.
+/// Thus, we will have the same hash if we iterate through array and hash both key and value
+/// for each yield on both `AH1` and `AH2`.
+impl<H, K, V> Hash for ArrayHash<H, K, V> where H: Hasher + Clone, K: Hash + PartialEq, V: Hash {
+    fn hash<H2: Hasher>(&self, hasher: &mut H2) {
+        // Since rust iterate on slice to hash and `Box<T>` is hash by deref into `T`,
+        // we can simply hash on `self.buckets`. It is equals to iterate on each
+        // inner element then hash each individual of it.
+        self.buckets.hash(hasher);
     }
 }
 
@@ -401,7 +422,7 @@ impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::h
     /// 
     /// It is useful for case where the stored key and query key is different type but the stored key
     /// can be borrow into the same type as query. For example, stored `Vec<T>` but query with `&[T]`.
-    /// It isn't possible to use [get](struct.ArrayHash.html#method.get) method as `[T]` 
+    /// It isn't possible to use [remove](struct.ArrayHash.html#method.remove) method as `[T]` 
     /// isn't implement `PartialEq<Vec<T>>`.
     /// 
     /// # Parameter
