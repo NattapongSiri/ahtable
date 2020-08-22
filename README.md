@@ -23,6 +23,16 @@ An array hash data structure where array is allocated up front with specific siz
     1. `split_by()` which return another array and move all value that satisfy the predicate into new array.
     1. `is_hasher_eq()` to check whether two array have equivalence hasher.
 
+## Breaking change from 0.1 to 0.2
+- `ArrayHash::try_put` is now return `Result`. When it fail to put, it return `Err` with given key/value along with reference to current value associated with given key. When it succeed, it return `Ok` with reference to value that was put into array.
+
+## Migration guide from 0.1 to 0.2
+1. for any `if let Some(v) = array_hash.try_put(key, value)`, it'd become `if let Err((key, value, cur_val) = array_hash.try_put(key, value)`
+1. for any `if array_hash.try_put(key, value).is_some()`, it'd become `if array_hash.try_put(key, value).is_err()`
+1. for any `if array_hash.try_put(key, value).is_none()`, it'd become `if array_hash.try_put(key, value).is_ok()`
+1. for any statement `array_hash.try_put(key, value);`, it'd become `array_hash.try_put(key, value).unwrap()`
+1. for any `let cur_v = array_hash.try_put(key, value).unwrap()`, it'd become `let (_, _, cur_v) = array_hash.try_put(key, value).unwrap_err()`
+
 ## Important notes
 1. `PartialEq` of `ArrayHash` need both comparator and comparatee to be exactly the same. This including `Hasher` which must be seed by exactly the same number. The ideal usage is to fill largest array first then use `ArrayHash::to_builder` to build second array. If it is impossible, consider construct an `ArrayHash` that is large enough to stored everything without reaching `max_load_factor` then use `ArrayHash::to_builder` or clone that `ArrayHashBuilder` to build every array.
 1. There's method `ArrayHash::is_hasher_eq` to test whether two array can be compared. If two arrays are using different type of hasher, it will immediately yield compile error. If it use the same type of hasher but it use different seed, it will return `false`. Otherwise, it is comparable via `==` operator.
@@ -30,9 +40,14 @@ An array hash data structure where array is allocated up front with specific siz
 1. It is much faster to use `==` operator to compare two arrays than using `ArrayHash::contains_iter` as `contains_iter` will need to hash every key return by iter. The `contains_iter` method is suitable in case where two arrays are using different hasher type or built from different ``ArrayHashBuilder`.
 
 # What's new
+## 0.2.0
+- `ArrayHash::try_put` moved given `key` and `value` but doesn't guarantee to put the `key` and `value` in.
+It now return `Result`. If the `key` and `value` is successfully put, it return `Ok((&V))` where `&V` is the reference to value that was put. If it fail to put, it return `Err((K, V))` where `K` is the given `key` and `V` is given value.
+## 0.1.5
+- Fix hash defect. When hashing on `ArrayHash` itself which may cause two hash to be different eventhough, `==` of two array is true. This is because `PartialEq` doesn't compare `max_load_factor` but in `0.1.4` hash take `max_load_factor` to calculate the hash.
 ## 0.1.4
 - `ArrayHash` and `ArrayHashBuilder` are now implements `Hash` and `PartialEq`
-- `ArrayHash::is_hash_eq`
+- `ArrayHash::is_hasher_eq` to check if two array use exactly the same hasher.
 - `ArrayHash::coerce_get` and `ArrayHash::coerce_remove` that accept a borrowed type that doesn't implement `PartialEq<K>` with the stored entry
 - `ArrayHash::smart_remove` which is counterpart of `ArrayHash::smart_get` that is usable when both stored `key` and query can be deref into the same type.
 - impl `core::convert::From<ArrayHash>`  for `ArrayHashBuilder`.

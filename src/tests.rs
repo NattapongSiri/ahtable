@@ -123,6 +123,15 @@ fn put_contractual_get_xx() {
 }
 
 #[test]
+fn try_put() {
+    let mut ah = ArrayHashBuilder::default().build();
+    assert_eq!(ah.try_put(1u8, 1u8).unwrap(), &1u8);
+    assert_eq!(ah.try_put(1u8, 1u8).unwrap_err(), (1u8, 1u8, &1u8));
+    assert_eq!(ah.try_put(0u8, 1u8).unwrap(), &1u8);
+    assert_eq!(ah.try_put(0u8, 1u8).unwrap_err(), (0u8, 1u8, &1u8));
+}
+
+#[test]
 fn put_coalesced_get_xx() {
     let mut ah = ArrayHashBuilder::default().max_load_factor(10_000).build();
     

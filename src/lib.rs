@@ -264,26 +264,30 @@ impl<H, K, V> ArrayHash<H, K, V> where H: core::hash::Hasher + Clone, K: core::h
     }
 
     /// Try to put value into this `ArrayHash`.
-    /// If the given key is already in used, leave old entry as is and return current value associated with the key.
-    /// Otherwise, add entry to this `ArrayHash` and return None.
+    /// If the given key is already in used, leave old entry as is 
+    /// and return key/value along with current reference to value associated with the key.
+    /// Otherwise, add entry to this `ArrayHash` and return reference to current value.
     /// 
     /// # Parameter
     /// - `entry` - A tuple of (key, value) to be add to this.
     /// # Return
-    /// It return reference to existing value associated with given key, otherwise, it put the value 
-    /// into this `ArrayHash` and return None.
-    pub fn try_put(&mut self, key: K, value: V) -> Option<&V> {
+    /// It return `Ok(&V)` if key/value were put into this collection.
+    /// Otherwise, it return `Err((K, V, &V))` where `K` is given key,
+    /// `V` is given value, and `&V` is reference to current value associated
+    /// with given key
+    pub fn try_put(&mut self, key: K, value: V) -> Result<&V, (K, V, &V)> {
         let mut index = self.make_key(&key);
 
         if let Some(i) = self.buckets.as_ref().unwrap()[index].iter().position(|(k, _)| *k == key) {
-            Some(&self.buckets.as_ref().unwrap()[index][i].1)
+            Err((key, value, &self.buckets.as_ref().unwrap()[index][i].1))
         } else {
             self.size += 1;
             if self.maybe_expand() {
                 index = self.make_key(&key);
             }
-            self.buckets.as_mut().unwrap()[index].push((key, value));
-            None
+            let bucket = &mut self.buckets.as_mut().unwrap()[index];
+            bucket.push((key, value));
+            Ok(&bucket[bucket.len() - 1].1)
         }
     }
 
